@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# SQLite
+*.db
+
+# Virtual env
+venv/
+.env
+
+# Streamlit
+.streamlit/
+
+# Mac
+.DS_Store
+
