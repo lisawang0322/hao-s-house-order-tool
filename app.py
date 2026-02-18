@@ -16,6 +16,53 @@ init_db()
 st.title("Orders")
 
 
+@st.dialog("New order")
+def new_order_modal():
+    customer = st.text_input("Customer name", placeholder="e.g. Chocolaty")
+    wants_delivery = st.checkbox("Requires delivery", value=False)
+    is_paid = st.checkbox("Paid", value=False)
+
+    # Optional: you can collect notes too (only if you add a column later)
+    # notes = st.text_area("Notes (optional)")
+
+    c1, c2 = st.columns(2)
+    if c1.button("Create order", type="primary", disabled=(not customer.strip())):
+        conn = get_conn()
+        try:
+            order_id = str(uuid.uuid4())
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO orders (
+                    order_id, customer, total_dollar,
+                    is_paid, wants_delivery, is_fulfilled, is_delivered
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    order_id,
+                    customer.strip(),
+                    0.0,
+                    1 if is_paid else 0,
+                    1 if wants_delivery else 0,
+                    0,
+                    0,  # DB trigger already enforces delivered rules
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Optional UX: auto-open the Add Items modal for this new order
+        st.session_state["open_add_modal_for"] = order_id
+
+        st.rerun()
+
+    if c2.button("Cancel"):
+        st.rerun()
+
+
+
 # -----------------------------
 # Small UI helpers
 # -----------------------------
@@ -226,6 +273,11 @@ if filter_undelivered:
 query += " ORDER BY created_at DESC"
 orders = pd.read_sql_query(query, conn, params=params)
 
+top1, top2 = st.columns([1, 5])
+if top1.button("➕ New order"):
+    new_order_modal()
+
+
 # --- Batch / View totals (sum of currently displayed orders) ---
 batch_total = float(orders["total_dollar"].fillna(0).sum())
 
@@ -283,19 +335,37 @@ def add_item_to_order(order_id: str, item_name: str, qty_to_add: int, unit_price
         conn.close()
 
 
+
+# ============================
+# Add-items modal (NO key=, compatible)
+# ============================
+
+# Initialize modal state once
+if "open_add_modal_for" not in st.session_state:
+    st.session_state["open_add_modal_for"] = None
+
+
 @st.dialog("Add items")
-def add_items_modal(order_id: str):
+def add_items_modal():
     """
     Modal UI: select item from catalog, qty, unit price auto-populates.
+    Uses st.session_state["open_add_modal_for"] as the target order_id.
     """
+    order_id = st.session_state.get("open_add_modal_for")
+    if not order_id:
+        # Safety: if modal opens without a target, close it
+        st.session_state["open_add_modal_for"] = None
+        st.rerun()
+
     if catalog.empty:
         st.warning("No catalog loaded. Import an Excel file to load the product catalog.")
+        if st.button("Close"):
+            st.session_state["open_add_modal_for"] = None
+            st.rerun()
         return
 
-    # Show a small context line
     st.caption(f"Order ID: {order_id}")
 
-    # Use stable keys tied to the order_id so the modal behaves consistently
     sel_key = f"modal_sel_{order_id}"
     qty_key = f"modal_qty_{order_id}"
     price_key = f"modal_price_{order_id}"
@@ -318,17 +388,12 @@ def add_items_modal(order_id: str):
     unit_price = st.number_input("Unit price", min_value=0.0, step=0.5, key=price_key)
 
     c1, c2 = st.columns([1, 1])
+
     if c1.button("Add", type="primary"):
-        #add_item_to_order(conn, order_id, selected, int(qty_to_add), float(unit_price))
         add_item_to_order(order_id, selected, int(qty_to_add), float(unit_price))
 
-
-        # Optional: if you use packed_ / qty_ widgets in the checklist, keep them consistent
-        # (safe to leave even if not present yet)
         try:
-            #sync_packed_widget_state_from_db(conn, order_id)
             sync_packed_widget_state_from_db(order_id)
-
         except Exception:
             pass
 
@@ -340,17 +405,16 @@ def add_items_modal(order_id: str):
         st.rerun()
 
 
-# Initialize modal state once
-if "open_add_modal_for" not in st.session_state:
-    st.session_state["open_add_modal_for"] = None
-
 if st.session_state.get("open_add_modal_for"):
-    add_items_modal(st.session_state["open_add_modal_for"])
+    add_items_modal()
+
+
 # -----------------------------
 # Render orders list (row itself expandable + divider between orders)
 # -----------------------------
 def status_text(label: str, value: bool) -> str:
     return f"🟢 {label}" if value else f"⚪ {label}"
+
 
 
 for _, o in orders.iterrows():
