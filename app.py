@@ -370,13 +370,13 @@ for _, o in orders.iterrows():
         s2.markdown(status_text("Delivery", wants_delivery))
         s3.markdown(status_text("Fulfilled", fulfilled))
         s4.markdown(status_text("Delivered", delivered))
-        header_label = f"{customer} | Total: {total_display} | Paid / Delivery / Fulfilled / Delivered"
+        header_label = f"{customer} | Total: {total_display}"
     else:
         s1, s2, s3 = h_mid.columns(3)
         s1.markdown(status_text("Paid", paid))
         s2.markdown(status_text("Delivery", wants_delivery))
         s3.markdown(status_text("Fulfilled", fulfilled))
-        header_label = f"{customer} | Total: {total_display} | Paid / Delivery / Fulfilled"
+        header_label = f"{customer} | Total: {total_display}"
         
     if h_right.button("➕", key=f"open_add_{order_id}", help="Add items to this order"):
         st.session_state["open_add_modal_for"] = order_id
