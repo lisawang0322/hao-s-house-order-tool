@@ -337,31 +337,40 @@ def add_item_to_order(order_id: str, item_name: str, qty_to_add: int, unit_price
 
 
 # ============================
-# Add-items modal (NO key=, compatible)
+# SINGLE MODAL ROUTER (REPLACEMENT)
+# Ensures only ONE dialog opens per run.
 # ============================
 
-# Initialize modal state once
-if "open_add_modal_for" not in st.session_state:
-    st.session_state["open_add_modal_for"] = None
+# One active modal at a time: None | "add_items" | "delete_order"
+if "active_modal" not in st.session_state:
+    st.session_state["active_modal"] = None
+
+if "active_modal_order_id" not in st.session_state:
+    st.session_state["active_modal_order_id"] = None
+
+
+def open_modal(modal_name: str, order_id: str):
+    st.session_state["active_modal"] = modal_name
+    st.session_state["active_modal_order_id"] = order_id
+    st.rerun()
+
+
+def close_modal():
+    st.session_state["active_modal"] = None
+    st.session_state["active_modal_order_id"] = None
+    st.rerun()
 
 
 @st.dialog("Add items")
 def add_items_modal():
-    """
-    Modal UI: select item from catalog, qty, unit price auto-populates.
-    Uses st.session_state["open_add_modal_for"] as the target order_id.
-    """
-    order_id = st.session_state.get("open_add_modal_for")
+    order_id = st.session_state.get("active_modal_order_id")
     if not order_id:
-        # Safety: if modal opens without a target, close it
-        st.session_state["open_add_modal_for"] = None
-        st.rerun()
+        close_modal()
 
     if catalog.empty:
         st.warning("No catalog loaded. Import an Excel file to load the product catalog.")
         if st.button("Close"):
-            st.session_state["open_add_modal_for"] = None
-            st.rerun()
+            close_modal()
         return
 
     st.caption(f"Order ID: {order_id}")
@@ -374,7 +383,6 @@ def add_items_modal():
     selected = st.selectbox("Item", options=catalog_names, key=sel_key)
     default_price = float(catalog.loc[catalog["item_name"] == selected, "unit_price"].iloc[0])
 
-    # Auto-populate price only when selection changes (don’t clobber manual overrides)
     if last_sel_key not in st.session_state:
         st.session_state[last_sel_key] = selected
     if st.session_state[last_sel_key] != selected:
@@ -388,24 +396,72 @@ def add_items_modal():
     unit_price = st.number_input("Unit price", min_value=0.0, step=0.5, key=price_key)
 
     c1, c2 = st.columns([1, 1])
-
     if c1.button("Add", type="primary"):
         add_item_to_order(order_id, selected, int(qty_to_add), float(unit_price))
-
         try:
             sync_packed_widget_state_from_db(order_id)
         except Exception:
             pass
-
-        st.session_state["open_add_modal_for"] = None
-        st.rerun()
+        close_modal()
 
     if c2.button("Cancel"):
-        st.session_state["open_add_modal_for"] = None
-        st.rerun()
+        close_modal()
 
 
-if st.session_state.get("open_add_modal_for"):
+@st.dialog("Remove order")
+def confirm_delete_order_modal():
+    order_id = st.session_state.get("active_modal_order_id")
+    if not order_id:
+        close_modal()
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT customer, total_dollar FROM orders WHERE order_id = ?", (order_id,))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        st.warning("Order no longer exists.")
+        if st.button("Close"):
+            close_modal()
+        return
+
+    customer = row["customer"]
+    total = float(row["total_dollar"] or 0.0)
+
+    st.warning(
+        f"Remove this order?\n\n"
+        f"**{customer}** | Total: ${total:,.2f}\n\n"
+        f"This will delete the order and all items in it."
+    )
+
+    c1, c2 = st.columns(2)
+    if c1.button("Yes, remove", type="primary"):
+        conn = get_conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("BEGIN")
+            cur.execute("DELETE FROM items WHERE order_id = ?", (order_id,))
+            cur.execute("DELETE FROM orders WHERE order_id = ?", (order_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        close_modal()
+
+    if c2.button("Cancel"):
+        close_modal()
+
+
+# ---- IMPORTANT: call only ONE dialog per run, and only here ----
+if st.session_state.get("active_modal") == "delete_order":
+    confirm_delete_order_modal()
+elif st.session_state.get("active_modal") == "add_items":
     add_items_modal()
 
 
@@ -433,6 +489,13 @@ for _, o in orders.iterrows():
     #h_left, h_mid = st.columns([3, 2])
     
     h_left, h_mid, h_right = st.columns([3, 2, 0.3])
+    
+    if h_right.button("➕", key=f"open_add_{order_id}", help="Add items"):
+        open_modal("add_items", order_id)
+
+    if h_right.button("🗑", key=f"open_del_{order_id}", help="Remove order"):
+        open_modal("delete_order", order_id)
+
 
     h_left.markdown(f"**{customer}**  |  Total: {total_display}")
 
@@ -450,9 +513,7 @@ for _, o in orders.iterrows():
         s3.markdown(status_text("Fulfilled", fulfilled))
         header_label = f"{customer} | Total: {total_display}"
         
-    if h_right.button("➕", key=f"open_add_{order_id}", help="Add items to this order"):
-        st.session_state["open_add_modal_for"] = order_id
-        st.rerun()
+
 
     # The row itself is expandable (no separate button)
     with st.expander(header_label, expanded=False):
