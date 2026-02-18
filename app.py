@@ -226,6 +226,14 @@ if filter_undelivered:
 query += " ORDER BY created_at DESC"
 orders = pd.read_sql_query(query, conn, params=params)
 
+# --- Batch / View totals (sum of currently displayed orders) ---
+batch_total = float(orders["total_dollar"].fillna(0).sum())
+
+st.markdown(f"### Batch total: ${batch_total:,.2f}")
+st.caption(f"Orders in view: {len(orders)}")
+st.divider()
+
+
 st.caption(f"Showing {len(orders)} orders")
 
 # Load catalog once for add-item UI
