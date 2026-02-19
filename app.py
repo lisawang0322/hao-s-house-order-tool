@@ -2,10 +2,70 @@
 import uuid
 import streamlit as st
 import pandas as pd
+import requests
+import os
+from dotenv import load_dotenv
+
 
 from db import init_db, get_conn, wipe_all
 from parsing import parse_orders_and_items  # returns: orders_df, items_df, checklist_df, catalog_df, issues_df
 
+load_dotenv()  # loads .env into environment variables
+
+# -----------------------------
+# Google Distance (Compute Once)
+# -----------------------------
+
+def get_setting(name: str, default: str | None = None) -> str | None:
+    # Streamlit Cloud / secrets.toml
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name])
+    except Exception:
+        pass
+    # Local / env (from .env via load_dotenv)
+    return os.getenv(name, default)
+
+GOOGLE_MAPS_API_KEY = get_setting("GOOGLE_MAPS_API_KEY")
+ORIGIN_ADDRESS = get_setting("ORIGIN_ADDRESS", "55 River Oaks Pl, San Jose, CA")
+
+if not GOOGLE_MAPS_API_KEY:
+    raise RuntimeError("Missing GOOGLE_MAPS_API_KEY (set in .env locally or Streamlit Secrets in Cloud).")
+
+
+def compute_distance_miles_google(destination_address: str) -> float:
+    if not GOOGLE_MAPS_API_KEY:
+        raise RuntimeError("GOOGLE_MAPS_API_KEY not set in .env")
+
+    url = "https://maps.googleapis.com/maps/api/distancematrix/json"
+
+    params = {
+        "origins": ORIGIN_ADDRESS,
+        "destinations": destination_address,
+        "mode": "driving",
+        "units": "imperial",
+        "key": GOOGLE_MAPS_API_KEY,
+    }
+
+    response = requests.get(url, params=params, timeout=10)
+
+    if response.status_code != 200:
+        raise RuntimeError(f"Google API error: HTTP {response.status_code}")
+
+    data = response.json()
+
+    if data.get("status") != "OK":
+        raise RuntimeError(f"Google API error: {data.get('status')}")
+
+    element = data["rows"][0]["elements"][0]
+
+    if element.get("status") != "OK":
+        raise RuntimeError(f"Distance lookup failed: {element.get('status')}")
+
+    distance_text = element["distance"]["text"]  # e.g. "3.4 mi"
+    miles = float(distance_text.replace(" mi", "").replace(",", ""))
+
+    return miles
 
 
 # -----------------------------
@@ -15,6 +75,21 @@ st.set_page_config(page_title="Order Checklist", layout="wide")
 init_db()
 st.title("Orders")
 
+def delivery_fee_from_miles(miles: float) -> float:
+    if miles < 2: return 1.99
+    if miles < 5: return 2.99
+    if miles < 10: return 4.99
+    if miles < 20: return 6.99
+    return 9.99
+
+def needs_distance_recalc(existing_address: str | None, new_address: str, existing_miles: float | None) -> bool:
+    if not new_address.strip():
+        return False
+    if existing_miles is None:
+        return True
+    if existing_address is None:
+        return True
+    return existing_address.strip() != new_address.strip()
 
 @st.dialog("New order")
 def new_order_modal():
@@ -111,15 +186,16 @@ def recompute_order_total(conn, order_id: str) -> None:
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT SUM(quantity * COALESCE(price, 0)) AS total
+        SELECT COALESCE(SUM(quantity * COALESCE(price, 0)), 0) AS total
         FROM items
         WHERE order_id = ?
         """,
         (order_id,),
     )
-    total = cur.fetchone()["total"]
+    total = float(cur.fetchone()["total"] or 0.0)
     cur.execute("UPDATE orders SET total_dollar = ? WHERE order_id = ?", (total, order_id))
     conn.commit()
+
 
 
 def recompute_order_fulfilled(conn, order_id: str) -> None:
@@ -279,16 +355,36 @@ if top1.button("➕ New order"):
 
 
 # --- Batch / View totals (sum of currently displayed orders) ---
-batch_total = float(orders["total_dollar"].fillna(0).sum())
+items_total = float(
+    pd.to_numeric(orders["total_dollar"], errors="coerce")
+      .fillna(0.0)
+      .sum()
+)
 
-st.markdown(f"### Batch total: ${batch_total:,.2f}")
+delivery_total = float(
+    pd.to_numeric(orders["delivery_fee"], errors="coerce")
+      .fillna(0.0)
+      .sum()
+)
+
+grand_total = items_total + delivery_total
+
+
+st.markdown("### Batch totals")
+b1, b2, b3 = st.columns(3)
+b1.metric("Items total", f"${items_total:,.2f}")
+b2.metric("Delivery fees", f"${delivery_total:,.2f}")
+b3.metric("Grand total", f"${grand_total:,.2f}")
+
 st.caption(f"Orders in view: {len(orders)}")
 st.divider()
+
 
 
 st.caption(f"Showing {len(orders)} orders")
 
 # Load catalog once for add-item UI
+
 catalog = pd.read_sql_query("SELECT item_name, unit_price FROM catalog ORDER BY item_name ASC", conn)
 catalog_names = catalog["item_name"].tolist()
 
@@ -485,57 +581,91 @@ for _, o in orders.iterrows():
 
     total_display = f"${float(total):.2f}" if pd.notna(total) else "—"
 
-    # Header content: customer + total + horizontal statuses
-    #h_left, h_mid = st.columns([3, 2])
-    
-    h_left, h_mid, h_right = st.columns([3, 2, 0.3])
-    
-    if h_right.button("➕", key=f"open_add_{order_id}", help="Add items"):
-        open_modal("add_items", order_id)
+    # -----------------------------
+    # Header block (cleaned + robust)
+    # -----------------------------
 
-    if h_right.button("🗑", key=f"open_del_{order_id}", help="Remove order"):
-        open_modal("delete_order", order_id)
+    order_id = o["order_id"]
+    customer = o["customer"]
+
+    paid = bool(o.get("is_paid", 0))
+    wants_delivery = bool(o.get("wants_delivery", 0))
+    fulfilled = bool(o.get("is_fulfilled", 0))
+    delivered = bool(o.get("is_delivered", 0))
+
+    # Totals: items total is orders.total_dollar; delivery fee stored separately
+    items_total = float(o.get("total_dollar") or 0.0)
+
+    # Normalize delivery fields safely (avoid nan)
+    d_addr = (o.get("delivery_address") or "").strip()
+    d_fee_raw = o.get("delivery_fee", None)
+    d_miles_raw = o.get("delivery_distance_miles", None)
+
+    delivery_fee = float(d_fee_raw) if (wants_delivery and pd.notna(d_fee_raw)) else None
+    delivery_miles = float(d_miles_raw) if (wants_delivery and pd.notna(d_miles_raw)) else None
+
+    has_delivery_calc = wants_delivery and d_addr != "" and (delivery_fee is not None) and (delivery_miles is not None) and delivery_miles > 0
+
+    # Expander label (ALWAYS defined)
+    if wants_delivery:
+        if has_delivery_calc:
+            grand_total = items_total + delivery_fee
+            header_label = (
+                f"{customer} | Items: ${items_total:,.2f} | Delivery: ${delivery_fee:,.2f} "
+                f"({delivery_miles:.1f} mi) | Grand: ${grand_total:,.2f}"
+            )
+        else:
+            # Placeholder before fee is computed
+            header_label = (
+                f"{customer} | Items: ${items_total:,.2f} | Delivery: — | Grand: ${items_total:,.2f}"
+            )
+    else:
+        header_label = f"{customer} | Items: ${items_total:,.2f}"
 
 
-    h_left.markdown(f"**{customer}**  |  Total: {total_display}")
+    # Row layout: left = name, mid = status pills, right = action icons
+    h_left, h_mid, h_right = st.columns([3, 2, 0.6])
 
+    h_left.markdown(f"**{customer}**")
+
+    # Status pills: 3 for pickup, 4 for delivery
     if wants_delivery:
         s1, s2, s3, s4 = h_mid.columns(4)
         s1.markdown(status_text("Paid", paid))
-        s2.markdown(status_text("Delivery", wants_delivery))
+        s2.markdown(status_text("Delivery", True))
         s3.markdown(status_text("Fulfilled", fulfilled))
         s4.markdown(status_text("Delivered", delivered))
-        header_label = f"{customer} | Total: {total_display}"
     else:
         s1, s2, s3 = h_mid.columns(3)
         s1.markdown(status_text("Paid", paid))
-        s2.markdown(status_text("Delivery", wants_delivery))
+        s2.markdown(status_text("Delivery", False))
         s3.markdown(status_text("Fulfilled", fulfilled))
-        header_label = f"{customer} | Total: {total_display}"
-        
+
+    # Action icons (two buttons side-by-side)
+    b_add, b_del = h_right.columns(2)
+    if b_add.button("➕", key=f"open_add_{order_id}", help="Add items"):
+        open_modal("add_items", order_id)
+    if b_del.button("🗑", key=f"open_del_{order_id}", help="Remove order"):
+        open_modal("delete_order", order_id)
 
 
     # The row itself is expandable (no separate button)
     with st.expander(header_label, expanded=False):
 
         # -------------------------
-        # Expanded Order Content
+        # Expanded Order Content (Top actions + toggles)
         # -------------------------
         a1, a2, a3 = st.columns([1, 1, 3])
 
         if a1.button("Mark all packed", key=f"pack_all_{order_id}"):
             set_all_packed(conn, order_id, True)
-            #sync_packed_widget_state_from_db(conn, order_id)
             sync_packed_widget_state_from_db(order_id)
-
             st.rerun()
 
         if a2.button("Clear packed", key=f"clear_pack_{order_id}"):
             set_all_packed(conn, order_id, False)
-            #sync_packed_widget_state_from_db(conn, order_id)
             sync_packed_widget_state_from_db(order_id)
             st.rerun()
-
 
         # Paid toggle always; Delivered toggle only for delivery orders
         if wants_delivery:
@@ -551,7 +681,7 @@ for _, o in orders.iterrows():
             st.rerun()
 
         if wants_delivery:
-            delivered_disabled = not fulfilled
+            delivered_disabled = not fulfilled  # your guardrail: only deliver if fulfilled
             new_delivered = t_delivered.checkbox(
                 "Delivered",
                 value=delivered,
@@ -567,7 +697,103 @@ for _, o in orders.iterrows():
                 conn.commit()
                 st.rerun()
 
-        # --- Packing Checklist ---
+        # -------------------------
+        # Delivery Section (INSIDE expander, UNIQUE keys, compute-once)
+        # -------------------------
+        if wants_delivery:
+            st.subheader("Delivery")
+
+            # Load stored values
+            conn2 = get_conn()
+            try:
+                cur2 = conn2.cursor()
+                cur2.execute(
+                    """
+                    SELECT delivery_address,
+                        delivery_distance_miles,
+                        delivery_fee,
+                        delivery_distance_computed_at
+                    FROM orders
+                    WHERE order_id = ?
+                    """,
+                    (order_id,),
+                )
+                row = cur2.fetchone()
+            finally:
+                conn2.close()
+
+            existing_address = (row["delivery_address"] if row and row["delivery_address"] else "") or ""
+            existing_miles = row["delivery_distance_miles"] if row else None
+            existing_fee = row["delivery_fee"] if row else None
+
+            # Use value=existing_address (no session_state prefill needed) and scoped keys
+            new_address = st.text_input(
+                "Delivery address",
+                value=existing_address,
+                key=f"delivery_addr_expander_{order_id}",
+                placeholder="Street, City, CA ZIP",
+            )
+
+            colA, colB = st.columns([1, 1])
+            calc_clicked = colA.button("Calculate delivery fee", key=f"calc_fee_expander_{order_id}")
+            recalc_clicked = colB.button("Recalculate", key=f"recalc_fee_expander_{order_id}")
+
+            # Compute-once rule:
+            # Only call Google if wants_delivery=1 AND address non-empty AND
+            # (distance missing OR address changed OR user clicks Recalculate)
+            def needs_recalc() -> bool:
+                if not new_address.strip():
+                    return False
+                if recalc_clicked:
+                    return True
+                if existing_miles is None or float(existing_miles or 0) <= 0:
+                    return True
+                return existing_address.strip() != new_address.strip()
+
+            if calc_clicked or recalc_clicked:
+                if not new_address.strip():
+                    st.warning("Please enter a delivery address first.")
+                elif calc_clicked and not needs_recalc():
+                    st.info("Delivery fee already computed for this address (no API call).")
+                else:
+                    miles = compute_distance_miles_google(new_address.strip())
+                    fee = delivery_fee_from_miles(miles)
+
+                    conn3 = get_conn()
+                    try:
+                        cur3 = conn3.cursor()
+                        cur3.execute(
+                            """
+                            UPDATE orders
+                            SET delivery_address = ?,
+                                delivery_distance_miles = ?,
+                                delivery_fee = ?,
+                                delivery_distance_computed_at = datetime('now'),
+                                delivery_distance_source = 'google'
+                            WHERE order_id = ?
+                            """,
+                            (new_address.strip(), float(miles), float(fee), order_id),
+                        )
+                        conn3.commit()
+                    finally:
+                        conn3.close()
+
+                    st.success(f"Saved: {miles:.2f} miles → ${fee:.2f}")
+                    st.rerun()
+
+            # Display stored results (NO API calls)
+            if existing_address.strip():
+                st.caption(f"Stored address: {existing_address}")
+            if existing_miles is not None and float(existing_miles or 0) > 0:
+                st.write(f"Stored distance: **{float(existing_miles):.2f} miles**")
+            if existing_fee is not None and float(existing_fee or 0) > 0:
+                st.write(f"Stored delivery fee: **${float(existing_fee):.2f}**")
+
+            st.divider()
+
+        # -------------------------
+        # Packing Checklist
+        # -------------------------
         st.subheader("Packing Checklist")
 
         items = pd.read_sql_query(
@@ -611,7 +837,6 @@ for _, o in orders.iterrows():
                     key=f"qty_{item_id}",
                 )
 
-                # Remove line item
                 if r4.button("Remove", key=f"rm_{item_id}"):
                     cur = conn.cursor()
                     cur.execute("DELETE FROM items WHERE item_id = ?", (item_id,))
@@ -620,7 +845,6 @@ for _, o in orders.iterrows():
                     recompute_order_fulfilled(conn, order_id)
                     st.rerun()
 
-                # Persist packed change
                 if int(new_packed) != packed_qty:
                     cur = conn.cursor()
                     cur.execute("UPDATE items SET packed_quantity = ? WHERE item_id = ?", (int(new_packed), item_id))
@@ -629,7 +853,6 @@ for _, o in orders.iterrows():
                     recompute_order_fulfilled(conn, order_id)
                     st.rerun()
 
-                # Persist ordered quantity change (clamp packed_quantity if needed)
                 if int(new_qty) != qty:
                     cur = conn.cursor()
                     clamped_packed = min(packed_qty, int(new_qty))
@@ -641,6 +864,7 @@ for _, o in orders.iterrows():
                     recompute_order_total(conn, order_id)
                     recompute_order_fulfilled(conn, order_id)
                     st.rerun()
+
 
     st.divider()
 

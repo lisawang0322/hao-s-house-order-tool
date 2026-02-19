@@ -131,6 +131,12 @@ def init_db() -> None:
     # Migration safety
     _add_column_if_missing(conn, "items", "packed_quantity INTEGER NOT NULL DEFAULT 0")
     _add_column_if_missing(conn, "orders", "is_delivered INTEGER NOT NULL DEFAULT 0")
+    _add_column_if_missing(conn, "orders", "delivery_address TEXT")
+    _add_column_if_missing(conn, "orders", "delivery_distance_miles REAL")
+    _add_column_if_missing(conn, "orders", "delivery_fee REAL")
+    _add_column_if_missing(conn, "orders", "delivery_distance_computed_at TEXT")
+    _add_column_if_missing(conn, "orders", "delivery_distance_source TEXT")
+
 
     # Enforce uniqueness for (order_id, name)
     _dedupe_items_by_order_and_name(conn)
