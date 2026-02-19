@@ -4,13 +4,11 @@ import streamlit as st
 import pandas as pd
 import requests
 import os
-from dotenv import load_dotenv
 
 
 from db import init_db, get_conn, wipe_all
 from parsing import parse_orders_and_items  # returns: orders_df, items_df, checklist_df, catalog_df, issues_df
 
-load_dotenv()  # loads .env into environment variables
 
 # -----------------------------
 # Google Distance (Compute Once)
