@@ -621,7 +621,18 @@ for _, o in orders.iterrows():
 
     has_delivery_calc = wants_delivery and d_addr != "" and (delivery_fee is not None) and (delivery_miles is not None) and delivery_miles > 0
 
-    # Expander label (ALWAYS defined)
+    
+    # Expander label (replace the existing header_label block)
+    items_total = float(o.get("total_dollar") or 0.0)
+    d_addr = (o.get("delivery_address") or "").strip()
+    d_fee_raw = o.get("delivery_fee", None)
+    d_miles_raw = o.get("delivery_distance_miles", None)
+
+    delivery_fee = float(d_fee_raw) if (wants_delivery and pd.notna(d_fee_raw)) else None
+    delivery_miles = float(d_miles_raw) if (wants_delivery and pd.notna(d_miles_raw)) else None
+
+    has_delivery_calc = wants_delivery and d_addr != "" and (delivery_fee is not None) and (delivery_miles is not None) and delivery_miles > 0
+
     if wants_delivery:
         if has_delivery_calc:
             grand_total = items_total + delivery_fee
@@ -630,12 +641,10 @@ for _, o in orders.iterrows():
                 f"({delivery_miles:.1f} mi) | Grand: ${grand_total:,.2f}"
             )
         else:
-            # Placeholder before fee is computed
-            header_label = (
-                f"{customer} | Items: ${items_total:,.2f} | Delivery: — | Grand: ${items_total:,.2f}"
-            )
+            header_label = f"{customer} | Items: ${items_total:,.2f} | Delivery: — | Grand: ${items_total:,.2f}"
     else:
         header_label = f"{customer} | Items: ${items_total:,.2f}"
+
 
 
     # Row layout: left = name, mid = status pills, right = action icons
@@ -643,7 +652,12 @@ for _, o in orders.iterrows():
 
     h_left.markdown(f"**{customer}**")
 
-    # Status pills: 3 for pickup, 4 for delivery
+    # Status pills (replace existing status pills block)
+    paid = bool(o.get("is_paid", 0))
+    fulfilled = bool(o.get("is_fulfilled", 0))
+    delivered = bool(o.get("is_delivered", 0))
+    handed_off = bool(o.get("is_handed_off", 0))
+
     if wants_delivery:
         s1, s2, s3, s4 = h_mid.columns(4)
         s1.markdown(status_text("Paid", paid))
@@ -651,10 +665,12 @@ for _, o in orders.iterrows():
         s3.markdown(status_text("Fulfilled", fulfilled))
         s4.markdown(status_text("Delivered", delivered))
     else:
-        s1, s2, s3 = h_mid.columns(3)
+        s1, s2, s3, s4 = h_mid.columns(4)
         s1.markdown(status_text("Paid", paid))
         s2.markdown(status_text("Delivery", False))
         s3.markdown(status_text("Fulfilled", fulfilled))
+        s4.markdown(status_text("Handed off", handed_off))
+
 
     # Action icons (two buttons side-by-side)
     b_add, b_del = h_right.columns(2)
@@ -682,84 +698,50 @@ for _, o in orders.iterrows():
             sync_packed_widget_state_from_db(order_id)
             st.rerun()
 
-        # Paid toggle always; Delivered toggle only for delivery orders
+
+        # Paid toggle always; Delivered toggle only for delivery orders (pickup gets handoff checkbox)
         if wants_delivery:
             t_paid, t_delivered, _ = a3.columns([1, 1, 2])
         else:
-            t_paid, _ = a3.columns([1, 3])
+            t_paid, t_handoff, _ = a3.columns([1, 1, 2])
 
-        new_paid = t_paid.checkbox("Paid", value=paid, key=f"paid_{order_id}")
+        new_paid = t_paid.checkbox("Paid", value=paid, key=f"paid_ctrl_{order_id}")
         if int(new_paid) != int(paid):
             cur = conn.cursor()
             cur.execute("UPDATE orders SET is_paid = ? WHERE order_id = ?", (1 if new_paid else 0, order_id))
             conn.commit()
             st.rerun()
-            
-        # -------------------------
-        # Payment Section
-        # -------------------------
-        st.subheader("Payment")
-        
-        # Load stored values
-        conn_pay = get_conn()
-        try:
-            cur_pay = conn_pay.cursor()
-            cur_pay.execute(
-                """
-                SELECT amount_received, change_given
-                FROM orders
-                WHERE order_id = ?
-                """,
-                (order_id,),
+
+        # Delivery / Handed off logic (use distinct keys)
+        if wants_delivery:
+            delivered_disabled = not fulfilled
+            new_delivered = t_delivered.checkbox(
+                "Delivered",
+                value=delivered,
+                disabled=delivered_disabled,
+                key=f"delivered_ctrl_{order_id}",
             )
-            payment_row = cur_pay.fetchone()
-        finally:
-            conn_pay.close()
+            if int(new_delivered) != int(delivered):
+                cur = conn.cursor()
+                cur.execute("UPDATE orders SET is_delivered = ? WHERE order_id = ?", (1 if new_delivered else 0, order_id))
+                conn.commit()
+                st.rerun()
+        else:
+            handed_disabled = not fulfilled
+            new_handed = t_handoff.checkbox(
+                "Handed off",
+                value=handed_off,
+                disabled=handed_disabled,
+                key=f"handed_ctrl_{order_id}",
+            )
+            if int(new_handed) != int(handed_off):
+                cur = conn.cursor()
+                cur.execute("UPDATE orders SET is_handed_off = ? WHERE order_id = ?", (1 if new_handed else 0, order_id))
+                conn.commit()
+                st.rerun()
 
-        existing_amount_received = float(payment_row["amount_received"] or 0.0) if payment_row else 0.0
+            
         
-        # Calculate total due (items + delivery)
-        total_due = items_total
-        if wants_delivery and delivery_fee is not None:
-            total_due += delivery_fee
-
-        # Display total due
-        st.write(f"**Total due: ${total_due:.2f}**")
-
-        # Input for amount received
-        new_amount_received = st.number_input(
-            "Amount received",
-            min_value=0.0,
-            step=0.01,
-            value=existing_amount_received,
-            key=f"amount_received_{order_id}",
-            format="%.2f"
-        )
-
-        # Auto-calculate change
-        auto_change = round(new_amount_received - total_due, 2) if new_amount_received > 0 else 0.0
-
-        # Save amount received if changed
-        if abs(new_amount_received - existing_amount_received) > 0.001:
-            conn_upd = get_conn()
-            try:
-                cur_upd = conn_upd.cursor()
-                cur_upd.execute(
-                    """
-                    UPDATE orders
-                    SET amount_received = ?, change_given = ?
-                    WHERE order_id = ?
-                    """,
-                    (float(new_amount_received), auto_change, order_id),
-                )
-                conn_upd.commit()
-            finally:
-                conn_upd.close()
-            st.rerun()
-
-        
-
-        st.divider()
 
 
         if wants_delivery:
@@ -768,16 +750,90 @@ for _, o in orders.iterrows():
                 "Delivered",
                 value=delivered,
                 disabled=delivered_disabled,
-                key=f"del_{order_id}",
+                key=f"delivered_ctrl_expander_{order_id}",  # made unique
             )
             if int(new_delivered) != int(delivered):
                 cur = conn.cursor()
-                cur.execute(
-                    "UPDATE orders SET is_delivered = ? WHERE order_id = ?",
-                    (1 if new_delivered else 0, order_id),
-                )
+                cur.execute("UPDATE orders SET is_delivered = ? WHERE order_id = ?", (1 if new_delivered else 0, order_id))
                 conn.commit()
                 st.rerun()
+
+        
+
+        # -------------------------
+        # Packing Checklist
+        # -------------------------
+        st.subheader("Packing Checklist")
+
+        items = pd.read_sql_query(
+            "SELECT * FROM items WHERE order_id = ? ORDER BY name ASC",
+            conn,
+            params=(order_id,),
+        )
+
+        if items.empty:
+            st.info("No items on this order yet.")
+        else:
+            for _, it in items.iterrows():
+                item_id = it["item_id"]
+                name = it["name"]
+                qty = int(it["quantity"])
+                price = it["price"]
+                packed_qty = int(it["packed_quantity"]) if pd.notna(it["packed_quantity"]) else 0
+
+                is_done = packed_qty >= qty
+                status = "✅" if is_done else "⬜"
+                price_display = f"${float(price):.2f}" if pd.notna(price) else "—"
+
+                r1, r2, r3, r4 = st.columns([5, 2, 2, 1])
+
+                r1.write(f"{status} {name}  | ordered: {qty}  | unit: {price_display}")
+
+                new_packed = r2.number_input(
+                    "Packed",
+                    min_value=0,
+                    max_value=qty,
+                    value=min(packed_qty, qty),
+                    step=1,
+                    key=f"packed_{item_id}",
+                )
+
+                new_qty = r3.number_input(
+                    "Ordered",
+                    min_value=1,
+                    value=qty,
+                    step=1,
+                    key=f"qty_{item_id}",
+                )
+
+                if r4.button("Remove", key=f"rm_{item_id}"):
+                    cur = conn.cursor()
+                    cur.execute("DELETE FROM items WHERE item_id = ?", (item_id,))
+                    conn.commit()
+                    recompute_order_total(conn, order_id)
+                    recompute_order_fulfilled(conn, order_id)
+                    st.rerun()
+
+                if int(new_packed) != packed_qty:
+                    cur = conn.cursor()
+                    cur.execute("UPDATE items SET packed_quantity = ? WHERE item_id = ?", (int(new_packed), item_id))
+                    conn.commit()
+                    recompute_order_total(conn, order_id)
+                    recompute_order_fulfilled(conn, order_id)
+                    st.rerun()
+
+                if int(new_qty) != qty:
+                    cur = conn.cursor()
+                    clamped_packed = min(packed_qty, int(new_qty))
+                    cur.execute(
+                        "UPDATE items SET quantity = ?, packed_quantity = ? WHERE item_id = ?",
+                        (int(new_qty), int(clamped_packed), item_id),
+                    )
+                    conn.commit()
+                    recompute_order_total(conn, order_id)
+                    recompute_order_fulfilled(conn, order_id)
+                    st.rerun()
+
 
         # -------------------------
         # Delivery Section (INSIDE expander, UNIQUE keys, compute-once)
@@ -872,82 +928,74 @@ for _, o in orders.iterrows():
                 st.write(f"Stored delivery fee: **${float(existing_fee):.2f}**")
 
             st.divider()
-
+        
         # -------------------------
-        # Packing Checklist
+        # Payment Section
         # -------------------------
-        st.subheader("Packing Checklist")
+        st.subheader("Payment")
+        
+        # Load stored values
+        conn_pay = get_conn()
+        try:
+            cur_pay = conn_pay.cursor()
+            cur_pay.execute(
+                """
+                SELECT amount_received, change_given
+                FROM orders
+                WHERE order_id = ?
+                """,
+                (order_id,),
+            )
+            payment_row = cur_pay.fetchone()
+        finally:
+            conn_pay.close()
 
-        items = pd.read_sql_query(
-            "SELECT * FROM items WHERE order_id = ? ORDER BY name ASC",
-            conn,
-            params=(order_id,),
+        existing_amount_received = float(payment_row["amount_received"] or 0.0) if payment_row else 0.0
+        
+        # Calculate total due (items + delivery)
+        total_due = items_total
+        if wants_delivery and delivery_fee is not None:
+            total_due += delivery_fee
+
+        # Display total due
+        st.write(f"**Total due: ${total_due:.2f}**")
+
+        # Input for amount received
+        new_amount_received = st.number_input(
+            "Amount received",
+            min_value=0.0,
+            step=0.01,
+            value=existing_amount_received,
+            key=f"amount_received_{order_id}",
+            format="%.2f"
         )
 
-        if items.empty:
-            st.info("No items on this order yet.")
-        else:
-            for _, it in items.iterrows():
-                item_id = it["item_id"]
-                name = it["name"]
-                qty = int(it["quantity"])
-                price = it["price"]
-                packed_qty = int(it["packed_quantity"]) if pd.notna(it["packed_quantity"]) else 0
+        # Auto-calculate change
+        auto_change = round(new_amount_received - total_due, 2) if new_amount_received > 0 else 0.0
 
-                is_done = packed_qty >= qty
-                status = "✅" if is_done else "⬜"
-                price_display = f"${float(price):.2f}" if pd.notna(price) else "—"
-
-                r1, r2, r3, r4 = st.columns([5, 2, 2, 1])
-
-                r1.write(f"{status} {name}  | ordered: {qty}  | unit: {price_display}")
-
-                new_packed = r2.number_input(
-                    "Packed",
-                    min_value=0,
-                    max_value=qty,
-                    value=min(packed_qty, qty),
-                    step=1,
-                    key=f"packed_{item_id}",
+        # Save amount received if changed
+        if abs(new_amount_received - existing_amount_received) > 0.001:
+            conn_upd = get_conn()
+            try:
+                cur_upd = conn_upd.cursor()
+                cur_upd.execute(
+                    """
+                    UPDATE orders
+                    SET amount_received = ?, change_given = ?
+                    WHERE order_id = ?
+                    """,
+                    (float(new_amount_received), auto_change, order_id),
                 )
+                conn_upd.commit()
+            finally:
+                conn_upd.close()
+            st.rerun()
 
-                new_qty = r3.number_input(
-                    "Ordered",
-                    min_value=1,
-                    value=qty,
-                    step=1,
-                    key=f"qty_{item_id}",
-                )
+        
 
-                if r4.button("Remove", key=f"rm_{item_id}"):
-                    cur = conn.cursor()
-                    cur.execute("DELETE FROM items WHERE item_id = ?", (item_id,))
-                    conn.commit()
-                    recompute_order_total(conn, order_id)
-                    recompute_order_fulfilled(conn, order_id)
-                    st.rerun()
-
-                if int(new_packed) != packed_qty:
-                    cur = conn.cursor()
-                    cur.execute("UPDATE items SET packed_quantity = ? WHERE item_id = ?", (int(new_packed), item_id))
-                    conn.commit()
-                    recompute_order_total(conn, order_id)
-                    recompute_order_fulfilled(conn, order_id)
-                    st.rerun()
-
-                if int(new_qty) != qty:
-                    cur = conn.cursor()
-                    clamped_packed = min(packed_qty, int(new_qty))
-                    cur.execute(
-                        "UPDATE items SET quantity = ?, packed_quantity = ? WHERE item_id = ?",
-                        (int(new_qty), int(clamped_packed), item_id),
-                    )
-                    conn.commit()
-                    recompute_order_total(conn, order_id)
-                    recompute_order_fulfilled(conn, order_id)
-                    st.rerun()
-
-
+        st.divider()
+           
     st.divider()
 
+    
 conn.close()
