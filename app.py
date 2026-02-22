@@ -5,6 +5,9 @@ import pandas as pd
 import requests
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from db import init_db, get_conn, wipe_all
 from parsing import parse_orders_and_items  # returns: orders_df, items_df, checklist_df, catalog_df, issues_df
@@ -365,14 +368,27 @@ delivery_total = float(
       .sum()
 )
 
+# Calculate total received and changes owed
+total_received = 0.0
+changes_owed = 0.0
+for _, o in orders.iterrows():
+    amount_recv = float(o.get("amount_received") or 0.0)
+    if amount_recv > 0.01:
+        total_received += amount_recv
+    change_owed = float(o.get("change_given") or 0.0)
+    if change_owed > 0.01:
+        changes_owed += change_owed
+
 grand_total = items_total + delivery_total
 
 
 st.markdown("### Batch totals")
-b1, b2, b3 = st.columns(3)
+b1, b2, b3, b4, b5 = st.columns(5)
 b1.metric("Items total", f"${items_total:,.2f}")
 b2.metric("Delivery fees", f"${delivery_total:,.2f}")
 b3.metric("Grand total", f"${grand_total:,.2f}")
+b4.metric("Total received", f"${total_received:,.2f}")
+b5.metric("Changes owed", f"${changes_owed:,.2f}")
 
 st.caption(f"Orders in view: {len(orders)}")
 st.divider()
@@ -380,6 +396,7 @@ st.divider()
 
 
 st.caption(f"Showing {len(orders)} orders")
+
 
 # Load catalog once for add-item UI
 
@@ -677,6 +694,73 @@ for _, o in orders.iterrows():
             cur.execute("UPDATE orders SET is_paid = ? WHERE order_id = ?", (1 if new_paid else 0, order_id))
             conn.commit()
             st.rerun()
+            
+        # -------------------------
+        # Payment Section
+        # -------------------------
+        st.subheader("Payment")
+        
+        # Load stored values
+        conn_pay = get_conn()
+        try:
+            cur_pay = conn_pay.cursor()
+            cur_pay.execute(
+                """
+                SELECT amount_received, change_given
+                FROM orders
+                WHERE order_id = ?
+                """,
+                (order_id,),
+            )
+            payment_row = cur_pay.fetchone()
+        finally:
+            conn_pay.close()
+
+        existing_amount_received = float(payment_row["amount_received"] or 0.0) if payment_row else 0.0
+        
+        # Calculate total due (items + delivery)
+        total_due = items_total
+        if wants_delivery and delivery_fee is not None:
+            total_due += delivery_fee
+
+        # Display total due
+        st.write(f"**Total due: ${total_due:.2f}**")
+
+        # Input for amount received
+        new_amount_received = st.number_input(
+            "Amount received",
+            min_value=0.0,
+            step=0.01,
+            value=existing_amount_received,
+            key=f"amount_received_{order_id}",
+            format="%.2f"
+        )
+
+        # Auto-calculate change
+        auto_change = round(new_amount_received - total_due, 2) if new_amount_received > 0 else 0.0
+
+        # Save amount received if changed
+        if abs(new_amount_received - existing_amount_received) > 0.001:
+            conn_upd = get_conn()
+            try:
+                cur_upd = conn_upd.cursor()
+                cur_upd.execute(
+                    """
+                    UPDATE orders
+                    SET amount_received = ?, change_given = ?
+                    WHERE order_id = ?
+                    """,
+                    (float(new_amount_received), auto_change, order_id),
+                )
+                conn_upd.commit()
+            finally:
+                conn_upd.close()
+            st.rerun()
+
+        
+
+        st.divider()
+
 
         if wants_delivery:
             delivered_disabled = not fulfilled  # your guardrail: only deliver if fulfilled

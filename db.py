@@ -136,7 +136,9 @@ def init_db() -> None:
     _add_column_if_missing(conn, "orders", "delivery_fee REAL")
     _add_column_if_missing(conn, "orders", "delivery_distance_computed_at TEXT")
     _add_column_if_missing(conn, "orders", "delivery_distance_source TEXT")
-
+    _add_column_if_missing(conn, "orders", "amount_received REAL DEFAULT 0")
+    _add_column_if_missing(conn, "orders", "change_given REAL DEFAULT 0")
+    _add_column_if_missing(conn, "orders", "change_status TEXT DEFAULT 'pending'")
 
     # Enforce uniqueness for (order_id, name)
     _dedupe_items_by_order_and_name(conn)
