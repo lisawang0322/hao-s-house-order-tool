@@ -979,18 +979,12 @@ for _, o in orders.iterrows():
                 status = "✅" if is_done else "⬜"
                 price_display = f"${float(price):.2f}" if pd.notna(price) else "—"
 
-                r1, r2, r3, r4 = st.columns([5, 2, 2, 1])
+                r1, r2, r3, r4, r5 = st.columns([4, 1, 1.5, 1.5, 1])
 
-                r1.write(f"{status} {name}  | ordered: {qty}  | unit: {price_display}")
-
-                new_packed = r2.number_input(
-                    "Packed",
-                    min_value=0,
-                    max_value=qty,
-                    value=min(packed_qty, qty),
-                    step=1,
-                    key=f"packed_{item_id}",
-                )
+                r1.write(f"{status} {name}")
+                
+                r2.caption("Unit Price")
+                r2.write(f"**{price_display}**")
 
                 new_qty = r3.number_input(
                     "Ordered",
@@ -1000,7 +994,16 @@ for _, o in orders.iterrows():
                     key=f"qty_{item_id}",
                 )
 
-                if r4.button("Remove", key=f"rm_{item_id}"):
+                new_packed = r4.number_input(
+                    "Packed",
+                    min_value=0,
+                    max_value=qty,
+                    value=min(packed_qty, qty),
+                    step=1,
+                    key=f"packed_{item_id}",
+                )
+
+                if r5.button("Remove", key=f"rm_{item_id}"):
                     open_remove_item_modal(item_id, order_id, name)
 
                 if int(new_packed) != packed_qty:
