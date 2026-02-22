@@ -1,3 +1,4 @@
+
 # app.py (FULL REPLACEMENT)
 import uuid
 import streamlit as st
@@ -519,6 +520,190 @@ def add_items_modal():
         close_modal()
 
 
+@st.dialog("Confirm Quantity Adjustment")
+def confirm_quantity_adjustment_modal():
+    item_id = st.session_state.get("qty_adjust_item_id")
+    order_id = st.session_state.get("qty_adjust_order_id")
+    adjustment_type = st.session_state.get("qty_adjust_type")  # "packed" or "ordered"
+    old_value = st.session_state.get("qty_adjust_old_value")
+    new_value = st.session_state.get("qty_adjust_new_value")
+    item_name = st.session_state.get("qty_adjust_item_name")
+
+    if not all([item_id, order_id, adjustment_type, old_value is not None, new_value is not None]):
+        st.warning("Invalid adjustment data.")
+        if st.button("Close"):
+            close_qty_adjustment_modal()
+        return
+
+    adjustment_label = "Packed quantity" if adjustment_type == "packed" else "Ordered quantity"
+    st.markdown(f"Adjust **{item_name}** - {adjustment_label}?")
+    st.markdown(f"**{old_value}** → **{new_value}**")
+
+    c1, c2 = st.columns(2)
+    if c1.button("Confirm", type="primary", key="confirm_qty_adjust"):
+        apply_quantity_adjustment(item_id, order_id, adjustment_type, old_value, new_value)
+        close_qty_adjustment_modal()
+        st.rerun()
+
+    if c2.button("Cancel", key="cancel_qty_adjust"):
+        # Reset the widget's session state to the original value
+        if item_id and adjustment_type and old_value is not None:
+            widget_key = f"packed_{item_id}" if adjustment_type == "packed" else f"qty_{item_id}"
+            st.session_state[widget_key] = old_value
+        close_qty_adjustment_modal()
+        st.rerun()
+
+
+@st.dialog("Reduce Ordered Quantity")
+def confirm_reduce_quantity_modal():
+    item_id = st.session_state.get("reduce_qty_item_id")
+    order_id = st.session_state.get("reduce_qty_order_id")
+    old_value = st.session_state.get("reduce_qty_old_value")
+    new_value = st.session_state.get("reduce_qty_new_value")
+    item_name = st.session_state.get("reduce_qty_item_name")
+
+    if not all([item_id, order_id, old_value is not None, new_value is not None]):
+        st.warning("Invalid adjustment data.")
+        if st.button("Close"):
+            close_reduce_quantity_modal()
+        return
+
+    st.warning(f"Reduce **{item_name}** ordered quantity?")
+    st.markdown(f"**{old_value}** → **{new_value}**")
+
+    c1, c2 = st.columns(2)
+    if c1.button("Yes, reduce", type="primary", key="confirm_reduce_qty"):
+        apply_quantity_adjustment(item_id, order_id, "ordered", old_value, new_value)
+        close_reduce_quantity_modal()
+        st.rerun()
+
+    if c2.button("Cancel", key="cancel_reduce_qty"):
+        # Reset the widget's session state to the original value
+        if item_id and old_value is not None:
+            st.session_state[f"qty_{item_id}"] = old_value
+        close_reduce_quantity_modal()
+        st.rerun()
+
+
+def open_qty_adjustment_modal(item_id: str, order_id: str, adjustment_type: str, old_value: int, new_value: int, item_name: str):
+    st.session_state["qty_adjust_item_id"] = item_id
+    st.session_state["qty_adjust_order_id"] = order_id
+    st.session_state["qty_adjust_type"] = adjustment_type
+    st.session_state["qty_adjust_old_value"] = old_value
+    st.session_state["qty_adjust_new_value"] = new_value
+    st.session_state["qty_adjust_item_name"] = item_name
+    st.session_state["active_modal"] = "confirm_qty_adjustment"
+    st.rerun()
+
+
+def close_qty_adjustment_modal():
+    st.session_state["qty_adjust_item_id"] = None
+    st.session_state["qty_adjust_order_id"] = None
+    st.session_state["qty_adjust_type"] = None
+    st.session_state["qty_adjust_old_value"] = None
+    st.session_state["qty_adjust_new_value"] = None
+    st.session_state["qty_adjust_item_name"] = None
+    st.session_state["pending_qty_adjustment"] = None
+    st.session_state["active_modal"] = None
+
+
+def open_reduce_quantity_modal(item_id: str, order_id: str, old_value: int, new_value: int, item_name: str):
+    st.session_state["reduce_qty_item_id"] = item_id
+    st.session_state["reduce_qty_order_id"] = order_id
+    st.session_state["reduce_qty_old_value"] = old_value
+    st.session_state["reduce_qty_new_value"] = new_value
+    st.session_state["reduce_qty_item_name"] = item_name
+    st.session_state["active_modal"] = "confirm_reduce_quantity"
+    st.rerun()
+
+
+def close_reduce_quantity_modal():
+    st.session_state["reduce_qty_item_id"] = None
+    st.session_state["reduce_qty_order_id"] = None
+    st.session_state["reduce_qty_old_value"] = None
+    st.session_state["reduce_qty_new_value"] = None
+    st.session_state["reduce_qty_item_name"] = None
+    st.session_state["pending_qty_adjustment"] = None
+    st.session_state["active_modal"] = None
+
+
+def apply_quantity_adjustment(item_id: str, order_id: str, adjustment_type: str, old_value: int, new_value: int):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        if adjustment_type == "packed":
+            cur.execute("UPDATE items SET packed_quantity = ? WHERE item_id = ?", (int(new_value), item_id))
+        elif adjustment_type == "ordered":
+            # When adjusting ordered quantity, clamp packed_quantity if needed
+            cur.execute("SELECT packed_quantity FROM items WHERE item_id = ?", (item_id,))
+            row = cur.fetchone()
+            packed_qty = int(row["packed_quantity"]) if row and pd.notna(row["packed_quantity"]) else 0
+            clamped_packed = min(packed_qty, int(new_value))
+            cur.execute(
+                "UPDATE items SET quantity = ?, packed_quantity = ? WHERE item_id = ?",
+                (int(new_value), int(clamped_packed), item_id),
+            )
+        conn.commit()
+        recompute_order_total(conn, order_id)
+        recompute_order_fulfilled(conn, order_id)
+    finally:
+        conn.close()
+    # Clear the pending adjustment
+    st.session_state["pending_qty_adjustment"] = None
+
+
+@st.dialog("Remove item")
+def confirm_remove_item_modal():
+    item_id = st.session_state.get("remove_item_id")
+    order_id = st.session_state.get("remove_item_order_id")
+    item_name = st.session_state.get("remove_item_name")
+
+    if not all([item_id, order_id, item_name]):
+        st.warning("Invalid item data.")
+        if st.button("Close"):
+            close_remove_item_modal()
+        return
+
+    st.warning(f"Remove **{item_name}** from this order?")
+
+    c1, c2 = st.columns(2)
+    if c1.button("Yes, remove", type="primary", key="confirm_remove_item"):
+        apply_remove_item(item_id, order_id)
+        close_remove_item_modal()
+        st.rerun()
+
+    if c2.button("Cancel", key="cancel_remove_item"):
+        close_remove_item_modal()
+        st.rerun()
+
+
+def open_remove_item_modal(item_id: str, order_id: str, item_name: str):
+    st.session_state["remove_item_id"] = item_id
+    st.session_state["remove_item_order_id"] = order_id
+    st.session_state["remove_item_name"] = item_name
+    st.session_state["active_modal"] = "confirm_remove_item"
+    st.rerun()
+
+
+def close_remove_item_modal():
+    st.session_state["remove_item_id"] = None
+    st.session_state["remove_item_order_id"] = None
+    st.session_state["remove_item_name"] = None
+    st.session_state["active_modal"] = None
+
+
+def apply_remove_item(item_id: str, order_id: str):
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM items WHERE item_id = ?", (item_id,))
+        conn.commit()
+        recompute_order_total(conn, order_id)
+        recompute_order_fulfilled(conn, order_id)
+    finally:
+        conn.close()
+
+
 @st.dialog("Remove order")
 def confirm_delete_order_modal():
     order_id = st.session_state.get("active_modal_order_id")
@@ -574,6 +759,12 @@ if st.session_state.get("active_modal") == "delete_order":
     confirm_delete_order_modal()
 elif st.session_state.get("active_modal") == "add_items":
     add_items_modal()
+elif st.session_state.get("active_modal") == "confirm_qty_adjustment":
+    confirm_quantity_adjustment_modal()
+elif st.session_state.get("active_modal") == "confirm_reduce_quantity":
+    confirm_reduce_quantity_modal()
+elif st.session_state.get("active_modal") == "confirm_remove_item":
+    confirm_remove_item_modal()
 
 
 # -----------------------------
@@ -771,6 +962,29 @@ for _, o in orders.iterrows():
             params=(order_id,),
         )
 
+        # Check if there's a pending qty adjustment modal to show
+        pending_adj = st.session_state.get("pending_qty_adjustment")
+        if pending_adj:
+            # Show appropriate modal based on adjustment type
+            if pending_adj["type"] == "reduce":
+                open_reduce_quantity_modal(
+                    pending_adj["item_id"],
+                    pending_adj["order_id"],
+                    pending_adj["old"],
+                    pending_adj["new"],
+                    pending_adj["name"],
+                )
+            else:
+                # Regular quantity adjustment (packed or ordered increase)
+                open_qty_adjustment_modal(
+                    pending_adj["item_id"],
+                    pending_adj["order_id"],
+                    pending_adj["type"],
+                    pending_adj["old"],
+                    pending_adj["new"],
+                    pending_adj["name"],
+                )
+        
         if items.empty:
             st.info("No items on this order yet.")
         else:
@@ -807,31 +1021,40 @@ for _, o in orders.iterrows():
                 )
 
                 if r4.button("Remove", key=f"rm_{item_id}"):
-                    cur = conn.cursor()
-                    cur.execute("DELETE FROM items WHERE item_id = ?", (item_id,))
-                    conn.commit()
-                    recompute_order_total(conn, order_id)
-                    recompute_order_fulfilled(conn, order_id)
-                    st.rerun()
+                    open_remove_item_modal(item_id, order_id, name)
 
                 if int(new_packed) != packed_qty:
-                    cur = conn.cursor()
-                    cur.execute("UPDATE items SET packed_quantity = ? WHERE item_id = ?", (int(new_packed), item_id))
-                    conn.commit()
-                    recompute_order_total(conn, order_id)
-                    recompute_order_fulfilled(conn, order_id)
+                    st.session_state["pending_qty_adjustment"] = {
+                        "item_id": item_id,
+                        "order_id": order_id,
+                        "type": "packed",
+                        "old": packed_qty,
+                        "new": int(new_packed),
+                        "name": name,
+                    }
                     st.rerun()
 
                 if int(new_qty) != qty:
-                    cur = conn.cursor()
-                    clamped_packed = min(packed_qty, int(new_qty))
-                    cur.execute(
-                        "UPDATE items SET quantity = ?, packed_quantity = ? WHERE item_id = ?",
-                        (int(new_qty), int(clamped_packed), item_id),
-                    )
-                    conn.commit()
-                    recompute_order_total(conn, order_id)
-                    recompute_order_fulfilled(conn, order_id)
+                    # If reducing ordered quantity, show warning modal
+                    if int(new_qty) < qty:
+                        st.session_state["pending_qty_adjustment"] = {
+                            "item_id": item_id,
+                            "order_id": order_id,
+                            "type": "reduce",
+                            "old": qty,
+                            "new": int(new_qty),
+                            "name": name,
+                        }
+                    else:
+                        # Increasing quantity, use regular adjustment modal
+                        st.session_state["pending_qty_adjustment"] = {
+                            "item_id": item_id,
+                            "order_id": order_id,
+                            "type": "ordered",
+                            "old": qty,
+                            "new": int(new_qty),
+                            "name": name,
+                        }
                     st.rerun()
 
 
