@@ -931,26 +931,6 @@ for _, o in orders.iterrows():
                 conn.commit()
                 st.rerun()
 
-            
-        
-
-
-        if wants_delivery:
-            delivered_disabled = not fulfilled  # your guardrail: only deliver if fulfilled
-            new_delivered = t_delivered.checkbox(
-                "Delivered",
-                value=delivered,
-                disabled=delivered_disabled,
-                key=f"delivered_ctrl_expander_{order_id}",  # made unique
-            )
-            if int(new_delivered) != int(delivered):
-                cur = conn.cursor()
-                cur.execute("UPDATE orders SET is_delivered = ? WHERE order_id = ?", (1 if new_delivered else 0, order_id))
-                conn.commit()
-                st.rerun()
-
-        
-
         # -------------------------
         # Packing Checklist
         # -------------------------
