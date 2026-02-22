@@ -1005,16 +1005,12 @@ for _, o in orders.iterrows():
 
                 if r5.button("Remove", key=f"rm_{item_id}"):
                     open_remove_item_modal(item_id, order_id, name)
-
                 if int(new_packed) != packed_qty:
-                    st.session_state["pending_qty_adjustment"] = {
-                        "item_id": item_id,
-                        "order_id": order_id,
-                        "type": "packed",
-                        "old": packed_qty,
-                        "new": int(new_packed),
-                        "name": name,
-                    }
+                    cur = conn.cursor()
+                    cur.execute("UPDATE items SET packed_quantity = ? WHERE item_id = ?", (int(new_packed), item_id))
+                    conn.commit()
+                    recompute_order_total(conn, order_id)
+                    recompute_order_fulfilled(conn, order_id)
                     st.rerun()
 
                 if int(new_qty) != qty:
