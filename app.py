@@ -909,6 +909,8 @@ for _, o in orders.iterrows():
                 (1 if new_paid else 0, amount_received, order_id),
             )
             conn.commit()
+            # Clear the payment input's session state so it updates from DB
+            st.session_state[f"amount_received_{order_id}"] = amount_received
             st.rerun()
 
         # Delivery / Handed off logic (use distinct keys)
