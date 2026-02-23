@@ -899,7 +899,15 @@ for _, o in orders.iterrows():
         new_paid = t_paid.checkbox("Paid", value=paid, key=f"paid_ctrl_{order_id}")
         if int(new_paid) != int(paid):
             cur = conn.cursor()
-            cur.execute("UPDATE orders SET is_paid = ? WHERE order_id = ?", (1 if new_paid else 0, order_id))
+            total_due = float(o.get("total_dollar") or 0.0)
+            delivery_fee = float(o.get("delivery_fee") or 0.0)
+            grand_total = total_due + delivery_fee
+            # If marking as paid, set amount_received to grand total; if unpaid, set to 0
+            amount_received = grand_total if new_paid else 0.0
+            cur.execute(
+                "UPDATE orders SET is_paid = ?, amount_received = ? WHERE order_id = ?",
+                (1 if new_paid else 0, amount_received, order_id),
+            )
             conn.commit()
             st.rerun()
 
