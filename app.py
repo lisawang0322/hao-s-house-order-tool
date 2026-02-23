@@ -1170,8 +1170,10 @@ for _, o in orders.iterrows():
         # Display total due
         st.write(f"**Total due: ${total_due:.2f}**")
 
-        # Input for amount received
-        new_amount_received = st.number_input(
+        # Input for amount received with confirm button
+        col_input, col_btn = st.columns([4, 1])
+        
+        new_amount_received = col_input.number_input(
             "Amount received",
             min_value=0.0,
             step=0.01,
@@ -1182,24 +1184,30 @@ for _, o in orders.iterrows():
 
         # Auto-calculate change
         auto_change = round(new_amount_received - total_due, 2) if new_amount_received > 0 else 0.0
+        
+        # Display calculated change
+        st.write(f"Change: ${auto_change:.2f}")
 
-        # Save amount received if changed
-        if abs(new_amount_received - existing_amount_received) > 0.001:
-            conn_upd = get_conn()
-            try:
-                cur_upd = conn_upd.cursor()
-                cur_upd.execute(
-                    """
-                    UPDATE orders
-                    SET amount_received = ?, change_given = ?
-                    WHERE order_id = ?
-                    """,
-                    (float(new_amount_received), auto_change, order_id),
-                )
-                conn_upd.commit()
-            finally:
-                conn_upd.close()
-            st.rerun()
+        # Confirm button to save
+        if col_btn.button("Confirm", key=f"confirm_payment_{order_id}"):
+            if abs(new_amount_received - existing_amount_received) > 0.001:
+                conn_upd = get_conn()
+                try:
+                    cur_upd = conn_upd.cursor()
+                    cur_upd.execute(
+                        """
+                        UPDATE orders
+                        SET amount_received = ?, change_given = ?
+                        WHERE order_id = ?
+                        """,
+                        (float(new_amount_received), auto_change, order_id),
+                    )
+                    conn_upd.commit()
+                finally:
+                    conn_upd.close()
+                st.rerun()
+            else:
+                st.info("No change to save.")
 
         
 
