@@ -1179,10 +1179,13 @@ for _, o in orders.iterrows():
             "Amount received",
             min_value=0.0,
             step=0.01,
-            value=existing_amount_received,
+            value=existing_amount_received if existing_amount_received > 0 else None,
             key=f"amount_received_{order_id}",
             format="%.2f"
         )
+
+        # Handle None value (empty input)
+        new_amount_received = new_amount_received or 0.0
 
         # Auto-calculate change
         auto_change = round(new_amount_received - total_due, 2) if new_amount_received > 0 else 0.0
