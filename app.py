@@ -374,10 +374,10 @@ total_received = 0.0
 changes_owed = 0.0
 for _, o in orders.iterrows():
     amount_recv = float(o.get("amount_received") or 0.0)
-    if amount_recv > 0.01:
+    if amount_recv >= 0.01:
         total_received += amount_recv
     change_owed = float(o.get("change_given") or 0.0)
-    if change_owed > 0.01:
+    if change_owed >= 0.01:
         changes_owed += change_owed
 
 grand_total = items_total + delivery_total
