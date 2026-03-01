@@ -818,23 +818,27 @@ for _, o in orders.iterrows():
     d_addr = (o.get("delivery_address") or "").strip()
     d_fee_raw = o.get("delivery_fee", None)
     d_miles_raw = o.get("delivery_distance_miles", None)
+    memo = (o.get("memo") or "").strip()
 
     delivery_fee = float(d_fee_raw) if (wants_delivery and pd.notna(d_fee_raw)) else None
     delivery_miles = float(d_miles_raw) if (wants_delivery and pd.notna(d_miles_raw)) else None
 
     has_delivery_calc = wants_delivery and d_addr != "" and (delivery_fee is not None) and (delivery_miles is not None) and delivery_miles > 0
 
+    # Truncate memo for header display
+    memo_part = f" | Memo: {memo[:30]}{'...' if len(memo) > 30 else ''}" if memo else ""
+
     if wants_delivery:
         if has_delivery_calc:
             grand_total = items_total + delivery_fee
             header_label = (
                 f"{customer} | Items: ${items_total:,.2f} | Delivery: ${delivery_fee:,.2f} "
-                f"({delivery_miles:.1f} mi) | Grand: ${grand_total:,.2f}"
+                f"({delivery_miles:.1f} mi) | Grand: ${grand_total:,.2f}{memo_part}"
             )
         else:
-            header_label = f"{customer} | Items: ${items_total:,.2f} | Delivery: — | Grand: ${items_total:,.2f}"
+            header_label = f"{customer} | Items: ${items_total:,.2f} | Delivery: — | Grand: ${items_total:,.2f}{memo_part}"
     else:
-        header_label = f"{customer} | Items: ${items_total:,.2f}"
+        header_label = f"{customer} | Items: ${items_total:,.2f}{memo_part}"
 
 
 
@@ -1173,28 +1177,32 @@ for _, o in orders.iterrows():
         st.write(f"**Total due: ${total_due:.2f}**")
 
         # Input for amount received with confirm button
-        col_input, col_btn = st.columns([4, 1])
-        
-        new_amount_received = col_input.number_input(
-            "Amount received",
-            min_value=0.0,
-            step=0.01,
-            value=existing_amount_received if existing_amount_received > 0 else None,
-            key=f"amount_received_{order_id}",
-            format="%.2f"
-        )
+        with st.form(key=f"payment_form_{order_id}"):
+            col_input, col_btn = st.columns([4, 1])
+            
+            new_amount_received = col_input.number_input(
+                "Amount received",
+                min_value=0.0,
+                step=0.01,
+                value=existing_amount_received if existing_amount_received > 0 else None,
+                key=f"amount_received_{order_id}",
+                format="%.2f"
+            )
 
-        # Handle None value (empty input)
-        new_amount_received = new_amount_received or 0.0
+            # Handle None value (empty input)
+            new_amount_received = new_amount_received or 0.0
 
-        # Auto-calculate change
-        auto_change = round(new_amount_received - total_due, 2) if new_amount_received > 0 else 0.0
-        
-        # Display calculated change
-        st.write(f"Change: ${auto_change:.2f}")
+            # Auto-calculate change
+            auto_change = round(new_amount_received - total_due, 2) if new_amount_received > 0 else 0.0
+            
+            # Display calculated change
+            st.write(f"Change: ${auto_change:.2f}")
 
-        # Confirm button to save
-        if col_btn.button("Confirm", key=f"confirm_payment_{order_id}"):
+            # Confirm button to save (form submission via Enter or button click)
+            col_btn.form_submit_button("Confirm", key=f"confirm_payment_{order_id}")
+
+        # Check if form was submitted
+        if st.session_state.get(f"confirm_payment_{order_id}"):
             if abs(new_amount_received - existing_amount_received) > 0.001:
                 conn_upd = get_conn()
                 try:
@@ -1215,6 +1223,46 @@ for _, o in orders.iterrows():
                 st.info("No change to save.")
 
         
+
+        st.divider()
+
+        # -------------------------
+        # Memo Section
+        # -------------------------
+        st.subheader("Memo")
+
+        conn_memo = get_conn()
+        try:
+            cur_memo = conn_memo.cursor()
+            cur_memo.execute("SELECT memo FROM orders WHERE order_id = ?", (order_id,))
+            memo_row = cur_memo.fetchone()
+        finally:
+            conn_memo.close()
+
+        existing_memo = (memo_row["memo"] or "") if memo_row else ""
+
+        with st.form(key=f"memo_form_{order_id}"):
+            new_memo = st.text_area(
+                "Notes (delivery time, special requests, etc.)",
+                value=existing_memo,
+                key=f"memo_input_{order_id}",
+                height=100,
+                placeholder="e.g. Deliver after 5pm, ring doorbell, no nuts",
+            )
+            save_memo = st.form_submit_button("Save memo")
+
+        if save_memo:
+            conn_memo2 = get_conn()
+            try:
+                cur_memo2 = conn_memo2.cursor()
+                cur_memo2.execute(
+                    "UPDATE orders SET memo = ? WHERE order_id = ?",
+                    (new_memo.strip() or None, order_id),
+                )
+                conn_memo2.commit()
+            finally:
+                conn_memo2.close()
+            st.rerun()
 
         st.divider()
            
