@@ -1190,7 +1190,7 @@ for _, o in orders.iterrows():
             conn_pay.close()
 
         existing_amount_received = float(payment_row["amount_received"] or 0.0) if payment_row else 0.0
-        existing_change_owed_to = (payment_row.get("change_owed_to") or "") if payment_row else ""
+        existing_change_owed_to = (payment_row["change_owed_to"] or "") if payment_row and "change_owed_to" in payment_row.keys() else ""
         
         # Calculate total due (items + delivery)
         total_due = items_total
