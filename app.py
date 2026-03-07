@@ -717,6 +717,24 @@ def apply_remove_item(item_id: str, order_id: str):
         cur = conn.cursor()
         cur.execute("DELETE FROM items WHERE item_id = ?", (item_id,))
         conn.commit()
+        
+        # Check if this was a delivery item and if there are any other delivery items left
+        delivery_prefixes = ("选择配送", "选择配送（价格以实际地址为准-见群公号）")
+        cur.execute(
+            """
+            SELECT name FROM items 
+            WHERE order_id = ? 
+            AND (name LIKE ? OR name LIKE ?)
+            """,
+            (order_id, f"{delivery_prefixes[0]}%", f"{delivery_prefixes[1]}%")
+        )
+        remaining_delivery_items = cur.fetchall()
+        
+        # If no delivery items remain, turn off delivery
+        if not remaining_delivery_items:
+            cur.execute("UPDATE orders SET wants_delivery = 0 WHERE order_id = ?", (order_id,))
+            conn.commit()
+        
         recompute_order_total(conn, order_id)
         recompute_order_fulfilled(conn, order_id)
     finally:
