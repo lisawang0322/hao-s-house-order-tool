@@ -141,6 +141,7 @@ def init_db() -> None:
     _add_column_if_missing(conn, "orders", "change_status TEXT DEFAULT 'pending'")
     _add_column_if_missing(conn, "orders", "is_handed_off INTEGER DEFAULT 0")
     _add_column_if_missing(conn, "orders", "memo TEXT")
+    _add_column_if_missing(conn, "orders", "change_owed_to TEXT")
 
     # Enforce uniqueness for (order_id, name)
     _dedupe_items_by_order_and_name(conn)

@@ -372,6 +372,7 @@ delivery_total = float(
 # Calculate total received and changes owed
 total_received = 0.0
 changes_owed = 0.0
+change_owed_to_list = []
 for _, o in orders.iterrows():
     amount_recv = float(o.get("amount_received") or 0.0)
     if amount_recv >= 0.01:
@@ -379,6 +380,9 @@ for _, o in orders.iterrows():
     change_owed = float(o.get("change_given") or 0.0)
     if change_owed >= 0.01:
         changes_owed += change_owed
+        customer = o.get("customer", "Unknown")
+        change_owed_to = o.get("change_owed_to") or customer
+        change_owed_to_list.append(f"{change_owed_to}: ${change_owed:.2f}")
 
 grand_total = items_total + delivery_total
 
@@ -390,6 +394,12 @@ b2.metric("Delivery fees", f"${delivery_total:,.2f}")
 b3.metric("Grand total", f"${grand_total:,.2f}")
 b4.metric("Total received", f"${total_received:,.2f}")
 b5.metric("Changes owed", f"${changes_owed:,.2f}")
+
+# Show who change is owed to
+if change_owed_to_list:
+    st.markdown("**Change owed to:**")
+    for item in change_owed_to_list:
+        st.markdown(f"• {item}")
 
 st.caption(f"Orders in view: {len(orders)}")
 st.divider()
@@ -438,6 +448,14 @@ def add_item_to_order(order_id: str, item_name: str, qty_to_add: int, unit_price
                 VALUES(?, ?, ?, ?, ?, 0, 0)
                 """,
                 (str(uuid.uuid4()), order_id, item_name, int(qty_to_add), float(unit_price)),
+            )
+
+        # Check if this is a delivery item and automatically turn on delivery
+        delivery_prefixes = ("选择配送", "选择配送（价格以实际地址为准-见群公号）")
+        if any(item_name.startswith(prefix) for prefix in delivery_prefixes):
+            cur.execute(
+                "UPDATE orders SET wants_delivery = 1 WHERE order_id = ?",
+                (order_id,)
             )
 
         conn.commit()
@@ -780,9 +798,9 @@ for _, o in orders.iterrows():
     customer = o["customer"]
     total = o["total_dollar"]
 
-    paid = bool(o["is_paid"])
-    wants_delivery = bool(o["wants_delivery"])
-    fulfilled = bool(o["is_fulfilled"])
+    paid = bool(o.get("is_paid", 0))
+    wants_delivery = bool(o.get("wants_delivery", 0))
+    fulfilled = bool(o.get("is_fulfilled", 0))
     delivered = bool(o.get("is_delivered", 0))
 
     total_display = f"${float(total):.2f}" if pd.notna(total) else "—"
@@ -790,14 +808,6 @@ for _, o in orders.iterrows():
     # -----------------------------
     # Header block (cleaned + robust)
     # -----------------------------
-
-    order_id = o["order_id"]
-    customer = o["customer"]
-
-    paid = bool(o.get("is_paid", 0))
-    wants_delivery = bool(o.get("wants_delivery", 0))
-    fulfilled = bool(o.get("is_fulfilled", 0))
-    delivered = bool(o.get("is_delivered", 0))
 
     # Totals: items total is orders.total_dollar; delivery fee stored separately
     items_total = float(o.get("total_dollar") or 0.0)
@@ -1156,7 +1166,7 @@ for _, o in orders.iterrows():
             cur_pay = conn_pay.cursor()
             cur_pay.execute(
                 """
-                SELECT amount_received, change_given
+                SELECT amount_received, change_given, change_owed_to
                 FROM orders
                 WHERE order_id = ?
                 """,
@@ -1167,6 +1177,7 @@ for _, o in orders.iterrows():
             conn_pay.close()
 
         existing_amount_received = float(payment_row["amount_received"] or 0.0) if payment_row else 0.0
+        existing_change_owed_to = (payment_row["change_owed_to"] or "") if payment_row else ""
         
         # Calculate total due (items + delivery)
         total_due = items_total
@@ -1198,6 +1209,17 @@ for _, o in orders.iterrows():
             # Display calculated change
             st.write(f"Change: ${auto_change:.2f}")
 
+            # Add field for who change is owed to (only show if change > 0)
+            if auto_change > 0:
+                new_change_owed_to = st.text_input(
+                    "Change owed to",
+                    value=existing_change_owed_to or customer,
+                    key=f"change_owed_to_{order_id}",
+                    placeholder="Name of person receiving change"
+                )
+            else:
+                new_change_owed_to = existing_change_owed_to
+
             # Confirm button to save (form submission via Enter or button click)
             col_btn.form_submit_button("Confirm", key=f"confirm_payment_{order_id}")
 
@@ -1210,10 +1232,10 @@ for _, o in orders.iterrows():
                     cur_upd.execute(
                         """
                         UPDATE orders
-                        SET amount_received = ?, change_given = ?
+                        SET amount_received = ?, change_given = ?, change_owed_to = ?
                         WHERE order_id = ?
                         """,
-                        (float(new_amount_received), auto_change, order_id),
+                        (float(new_amount_received), auto_change, new_change_owed_to.strip() or None, order_id),
                     )
                     conn_upd.commit()
                 finally:

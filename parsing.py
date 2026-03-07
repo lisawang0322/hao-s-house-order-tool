@@ -84,7 +84,7 @@ def parse_order_content(
     content: str,
     price_map: Dict[str, float],
     *,
-    delivery_prefixes: Tuple[str, ...] = ("选择配送",),
+    delivery_prefixes: Tuple[str, ...] = ("选择配送", "选择配送（价格以实际地址为准-见群公号）"),
 ) -> Tuple[bool, List[Dict[str, Optional[float]]], List[str]]:
     """
     Parses an order '内容' cell into:
@@ -118,6 +118,14 @@ def parse_order_content(
         # Delivery detection (treat as boolean)
         if any(p.startswith(prefix) for prefix in delivery_prefixes):
             wants_delivery = True
+            # Create an item for delivery so users can double-check
+            m = re.search(r"x\s*(\d+)\s*$", p)
+            if m:
+                qty = int(m.group(1))
+                name = normalize_name(p[: m.start()])
+                # Use a standard price for delivery (0 or could be from catalog)
+                price = 0.0  # Delivery items typically don't have a price in the catalog
+                items.append({"name": name, "quantity": qty, "price": price})
             continue
 
         # Quantity parsing (must end with xN)
