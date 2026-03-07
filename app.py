@@ -5,6 +5,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import os
+import sqlite3
 
 from dotenv import load_dotenv
 
@@ -1164,20 +1165,32 @@ for _, o in orders.iterrows():
         conn_pay = get_conn()
         try:
             cur_pay = conn_pay.cursor()
-            cur_pay.execute(
-                """
-                SELECT amount_received, change_given, change_owed_to
-                FROM orders
-                WHERE order_id = ?
-                """,
-                (order_id,),
-            )
+            # Try to get change_owed_to, fall back if column doesn't exist
+            try:
+                cur_pay.execute(
+                    """
+                    SELECT amount_received, change_given, change_owed_to
+                    FROM orders
+                    WHERE order_id = ?
+                    """,
+                    (order_id,),
+                )
+            except sqlite3.OperationalError:
+                # Column doesn't exist yet, use fallback query
+                cur_pay.execute(
+                    """
+                    SELECT amount_received, change_given
+                    FROM orders
+                    WHERE order_id = ?
+                    """,
+                    (order_id,),
+                )
             payment_row = cur_pay.fetchone()
         finally:
             conn_pay.close()
 
         existing_amount_received = float(payment_row["amount_received"] or 0.0) if payment_row else 0.0
-        existing_change_owed_to = (payment_row["change_owed_to"] or "") if payment_row else ""
+        existing_change_owed_to = (payment_row.get("change_owed_to") or "") if payment_row else ""
         
         # Calculate total due (items + delivery)
         total_due = items_total
